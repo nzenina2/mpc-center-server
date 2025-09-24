@@ -76,7 +76,6 @@ const searchAsanaTasks = async (keyword) => {
       throw new Error('Asana token not configured');
     }
 
-    // Get user's tasks instead of using search (free version compatible)
     const response = await axios.get('https://app.asana.com/api/1.0/tasks', {
       headers: {
         'Authorization': `Bearer ${config.asanaToken}`,
@@ -90,7 +89,6 @@ const searchAsanaTasks = async (keyword) => {
       }
     });
     
-    // Filter tasks locally for the keyword
     return response.data.data.filter(task => 
       !task.completed && 
       task.name.toLowerCase().includes(keyword.toLowerCase())
@@ -105,9 +103,7 @@ const searchAsanaTasks = async (keyword) => {
 const updateAsanaTaskNotes = async (taskGid, newNotes) => {
   try {
     const response = await axios.put(`https://app.asana.com/api/1.0/tasks/${taskGid}`, {
-      data: {
-        notes: newNotes
-      }
+      data: { notes: newNotes }
     }, {
       headers: {
         'Authorization': `Bearer ${config.asanaToken}`,
@@ -134,7 +130,7 @@ const getCalendarEvent = async (eventId) => {
     return response.data;
   } catch (error) {
     if (error.code === 404) {
-      addLog(`Calendar event ${eventId} not found (may have been deleted)`, 'warning');
+      addLog(`Calendar event ${eventId} not found`, 'warning');
       return null;
     }
     throw error;
@@ -153,19 +149,18 @@ const deleteCalendarEvent = async (eventId) => {
   } catch (error) {
     if (error.code === 404) {
       addLog(`Calendar event ${eventId} already deleted`, 'warning');
-      return true; // Consider it successful if already deleted
+      return true;
     }
     addLog(`Failed to delete calendar event ${eventId}: ${error.message}`, 'error');
     throw error;
   }
 };
 
-// Compare dates to check if due date changed
+// Compare dates
 const isDueDateDifferent = (asanaDueDate, calendarEventDate) => {
   if (!asanaDueDate && !calendarEventDate) return false;
   if (!asanaDueDate || !calendarEventDate) return true;
   
-  // Convert both to comparable format (just the date part)
   const asanaDate = new Date(asanaDueDate + 'T09:00:00Z').toDateString();
   const calendarDate = new Date(calendarEventDate).toDateString();
   
@@ -191,31 +186,25 @@ const updateCalendarEventMarker = (notes, newEventId) => {
   return notes.replace(/\[CAL_EVENT:[^\]]+\]/, `[CAL_EVENT:${newEventId}]`);
 };
 
-// Real Google Calendar API implementation
+// Google Calendar API implementation
 const addToGoogleCalendar = async (task) => {
   try {
-    // Check if we have Google credentials
     if (!config.googleClientId || !config.googleClientSecret) {
-      throw new Error('Google Calendar credentials not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.');
+      throw new Error('Google Calendar credentials not configured');
     }
 
     if (!config.googleRefreshToken) {
-      throw new Error('Google Calendar not authenticated. Please visit /auth/google to authenticate.');
+      throw new Error('Google Calendar not authenticated');
     }
 
-    // Ensure we have valid access token
-    try {
-      await oauth2Client.getAccessToken();
-    } catch (error) {
-      throw new Error('Failed to get Google access token. Please re-authenticate at /auth/google');
-    }
+    await oauth2Client.getAccessToken();
 
     const startDate = task.due_on ? new Date(task.due_on + 'T09:00:00Z') : new Date();
-    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // 1 hour duration
+    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
 
     const event = {
       summary: task.name,
-      description: `${task.notes || 'No description available'}\n\nFrom Asana Task: https://app.asana.com/0/0/${task.gid}\nCreated by MPC Center`,
+      description: `${task.notes || 'No description available'}\n\nFrom Asana Task: https://app.asana.com/0/0/${task.gid}`,
       start: {
         dateTime: startDate.toISOString(),
         timeZone: 'UTC'
@@ -223,21 +212,13 @@ const addToGoogleCalendar = async (task) => {
       end: {
         dateTime: endDate.toISOString(),
         timeZone: 'UTC'
-      },
-      source: {
-        title: 'MPC Center',
-        url: `https://app.asana.com/0/0/${task.gid}`
       }
     };
-
-    addLog(`Creating Google Calendar event: ${task.name}`, 'info');
 
     const response = await calendar.events.insert({
       calendarId: config.googleCalendarId,
       resource: event,
     });
-
-    addLog(`Created Google Calendar event: ${task.name}`, 'success');
 
     return {
       success: true,
@@ -249,35 +230,28 @@ const addToGoogleCalendar = async (task) => {
 
   } catch (error) {
     addLog(`Google Calendar error: ${error.message}`, 'error');
-    // Fall back to mock if Google Calendar fails
-    addLog(`Falling back to mock calendar event: ${task.name}`, 'warning');
-    
     const startDate = task.due_on ? new Date(task.due_on + 'T09:00:00Z') : new Date();
-    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
-    
     return {
       success: true,
       eventId: `mock_event_${task.gid}`,
       eventUrl: null,
       startTime: startDate.toISOString(),
-      endTime: endDate.toISOString(),
-      note: 'Mock event - Google Calendar integration failed'
+      endTime: new Date(startDate.getTime() + 60 * 60 * 1000).toISOString(),
+      note: 'Mock event - Google Calendar failed'
     };
   }
 };
 
-// Smart sync function with duplicate prevention
+// Smart sync function
 const processTaskWithSmartSync = async (task) => {
   try {
     const existingEventId = extractCalendarEventId(task.notes);
     
     if (!existingEventId) {
-      // New task - create calendar event and add marker
       addLog(`New meeting task found: ${task.name}`, 'info');
       const result = await addToGoogleCalendar(task);
       
       if (result.success && !result.eventId.startsWith('mock_event_')) {
-        // Only update Asana notes for real Google Calendar events
         const updatedNotes = addCalendarEventMarker(task.notes, result.eventId);
         await updateAsanaTaskNotes(task.gid, updatedNotes);
       }
@@ -290,18 +264,15 @@ const processTaskWithSmartSync = async (task) => {
         eventId: result.eventId,
         eventUrl: result.eventUrl,
         startTime: result.startTime,
-        endTime: result.endTime,
-        note: result.note || null
+        endTime: result.endTime
       };
       
     } else {
-      // Existing task - check if due date changed
       addLog(`Checking existing meeting task: ${task.name}`, 'info');
       
       const existingEvent = await getCalendarEvent(existingEventId);
       
       if (!existingEvent) {
-        // Calendar event was deleted - create new one
         addLog(`Calendar event was deleted, creating new one: ${task.name}`, 'warning');
         const result = await addToGoogleCalendar(task);
         
@@ -318,12 +289,10 @@ const processTaskWithSmartSync = async (task) => {
           eventId: result.eventId,
           eventUrl: result.eventUrl,
           startTime: result.startTime,
-          endTime: result.endTime,
-          note: 'Recreated - original event was deleted'
+          endTime: result.endTime
         };
         
       } else if (isDueDateDifferent(task.due_on, existingEvent.start.dateTime)) {
-        // Due date changed - delete old event and create new one
         addLog(`Due date changed for task: ${task.name}`, 'info');
         
         await deleteCalendarEvent(existingEventId);
@@ -342,12 +311,10 @@ const processTaskWithSmartSync = async (task) => {
           eventId: result.eventId,
           eventUrl: result.eventUrl,
           startTime: result.startTime,
-          endTime: result.endTime,
-          note: 'Updated due to date change'
+          endTime: result.endTime
         };
         
       } else {
-        // No changes needed
         addLog(`No changes needed for task: ${task.name}`, 'info');
         stats.eventsSkipped++;
         return {
@@ -357,12 +324,10 @@ const processTaskWithSmartSync = async (task) => {
           eventId: existingEventId,
           eventUrl: existingEvent.htmlLink,
           startTime: existingEvent.start.dateTime,
-          endTime: existingEvent.end.dateTime,
-          note: 'No changes detected'
+          endTime: existingEvent.end.dateTime
         };
       }
     }
-    
   } catch (error) {
     addLog(`Error processing task ${task.name}: ${error.message}`, 'error');
     throw error;
@@ -375,7 +340,7 @@ const runSync = async () => {
   
   try {
     if (!config.asanaToken || !config.asanaWorkspaceId) {
-      throw new Error('Missing Asana configuration. Please set ASANA_TOKEN and ASANA_WORKSPACE_ID environment variables.');
+      throw new Error('Missing Asana configuration');
     }
 
     addLog(`Searching for tasks containing "${config.searchKeyword}"...`, 'info');
@@ -385,7 +350,7 @@ const runSync = async () => {
       addLog('No meeting tasks found', 'info');
       stats.totalScans++;
       stats.lastRun = new Date();
-      return { success: true, message: 'No tasks found', tasksFound: 0, eventsCreated: 0, eventsUpdated: 0, eventsSkipped: 0 };
+      return { success: true, message: 'No tasks found', tasksFound: 0 };
     }
 
     addLog(`Found ${tasks.length} meeting task(s)`, 'success');
@@ -397,15 +362,8 @@ const runSync = async () => {
       try {
         const result = await processTaskWithSmartSync(task);
         processedTasks.push(result);
-        
       } catch (error) {
         addLog(`Error processing task ${task.name}: ${error.message}`, 'error');
-        processedTasks.push({
-          action: 'error',
-          taskId: task.gid,
-          taskName: task.name,
-          error: error.message
-        });
       }
     }
     
@@ -434,9 +392,7 @@ const runSync = async () => {
   }
 };
 
-// Routes (keeping all existing routes)
-
-// Root route with API documentation
+// Routes
 app.get('/', (req, res) => {
   res.json({
     name: 'MPC Center API',
@@ -448,35 +404,25 @@ app.get('/', (req, res) => {
       'GET /api/status': 'Get current status and stats',
       'POST /api/start': 'Start automation',
       'POST /api/stop': 'Stop automation',
-      'POST /api/sync': 'Trigger manual sync (with smart duplicate prevention)',
+      'POST /api/sync': 'Trigger manual sync',
       'GET /api/logs': 'Get recent logs',
       'GET /api/google-status': 'Check Google Calendar connection',
       'GET /auth/google': 'Authenticate with Google Calendar'
     },
-    features: [
-      'Smart sync prevents duplicate calendar events',
-      'Automatic due date change detection',
-      'Stores calendar event IDs in Asana task notes',
-      'Updates calendar events when due dates change'
-    ],
     timestamp: new Date().toISOString()
   });
 });
 
-// Health check
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy', 
     timestamp: new Date().toISOString(),
     version: '1.1.0',
     environment: process.env.NODE_ENV || 'development',
-    port: PORT,
-    protocols: ['REST', 'MCP'],
-    features: ['Smart Sync', 'Duplicate Prevention']
+    port: PORT
   });
 });
 
-// Get status
 app.get('/api/status', (req, res) => {
   res.json({
     isRunning,
@@ -494,7 +440,6 @@ app.get('/api/status', (req, res) => {
   });
 });
 
-// Get logs
 app.get('/api/logs', (req, res) => {
   const limit = parseInt(req.query.limit) || 50;
   res.json({
@@ -504,7 +449,6 @@ app.get('/api/logs', (req, res) => {
   });
 });
 
-// Manual sync trigger
 app.post('/api/sync', async (req, res) => {
   try {
     const result = await runSync();
@@ -514,7 +458,6 @@ app.post('/api/sync', async (req, res) => {
   }
 });
 
-// Start automation
 app.post('/api/start', (req, res) => {
   if (isRunning) {
     return res.json({ success: false, message: 'Automation already running' });
@@ -533,13 +476,10 @@ app.post('/api/start', (req, res) => {
   
   res.json({ 
     success: true, 
-    message: `Automation started with smart sync - running every ${config.intervalHours} hours`,
-    nextRun: `In ${config.intervalHours} hours`,
-    features: ['Duplicate prevention', 'Due date change detection']
+    message: `Automation started - running every ${config.intervalHours} hours`
   });
 });
 
-// Stop automation
 app.post('/api/stop', (req, res) => {
   if (!isRunning) {
     return res.json({ success: false, message: 'Automation not running' });
@@ -556,29 +496,12 @@ app.post('/api/stop', (req, res) => {
   res.json({ success: true, message: 'Automation stopped' });
 });
 
-// Google Calendar authentication routes (keeping existing ones)
-
-// Route to start Google authentication
 app.get('/auth/google', (req, res) => {
   if (!config.googleClientId || !config.googleClientSecret) {
-    return res.status(400).send(`
-      <html>
-        <head><title>Google Calendar Setup Required</title></head>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-          <h1>❌ Google Calendar Setup Required</h1>
-          <p>Please configure Google Calendar credentials in your environment variables:</p>
-          <ul style="text-align: left; display: inline-block;">
-            <li>GOOGLE_CLIENT_ID</li>
-            <li>GOOGLE_CLIENT_SECRET</li>
-          </ul>
-          <a href="/" style="color: #007bff; text-decoration: none;">← Back to MPC Center</a>
-        </body>
-      </html>
-    `);
+    return res.status(400).send('Google Calendar credentials not configured');
   }
 
   const scopes = ['https://www.googleapis.com/auth/calendar'];
-  
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     scope: scopes,
@@ -588,10 +511,8 @@ app.get('/auth/google', (req, res) => {
   res.redirect(authUrl);
 });
 
-// OAuth callback route
 app.get('/auth/google/callback', async (req, res) => {
   const { code } = req.query;
-
   if (!code) {
     return res.status(400).send('No authorization code received');
   }
@@ -599,187 +520,82 @@ app.get('/auth/google/callback', async (req, res) => {
   try {
     const { tokens } = await oauth2Client.getToken(code);
     
-    // Store the refresh token temporarily
     if (tokens.refresh_token) {
       config.googleRefreshToken = tokens.refresh_token;
-      oauth2Client.setCredentials({
-        refresh_token: tokens.refresh_token
-      });
+      oauth2Client.setCredentials({ refresh_token: tokens.refresh_token });
       
       addLog('Google Calendar authenticated successfully', 'success');
       
       res.send(`
         <html>
-          <head><title>Google Calendar Connected</title></head>
           <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-            <h1>✅ Google Calendar Connected Successfully!</h1>
-            <p>Your MPC Center can now create calendar events with smart sync features.</p>
-            <p><strong>Important:</strong> Add this to your Railway environment variables:</p>
-            <div style="background: #f5f5f5; padding: 15px; margin: 20px; border-radius: 5px; word-break: break-all;">
-              <code>GOOGLE_REFRESH_TOKEN=${tokens.refresh_token}</code>
-            </div>
-            <p>Then restart your server for the change to take effect.</p>
-            <p><a href="/api/google-status" style="color: #007bff;">Check Connection Status</a> | <a href="/" style="color: #007bff;">← Back to MPC Center</a></p>
+            <h1>Google Calendar Connected Successfully!</h1>
+            <p>Add this to your Railway environment variables:</p>
+            <code>GOOGLE_REFRESH_TOKEN=${tokens.refresh_token}</code>
+            <p>Then restart your server.</p>
           </body>
         </html>
       `);
     } else {
-      res.status(400).send(`
-        <html>
-          <head><title>Authentication Issue</title></head>
-          <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-            <h1>⚠️ No Refresh Token Received</h1>
-            <p>Please try the authentication process again.</p>
-            <a href="/auth/google" style="color: #007bff;">Try Again</a> | <a href="/" style="color: #007bff;">← Back to MPC Center</a>
-          </body>
-        </html>
-      `);
+      res.status(400).send('No refresh token received');
     }
-
   } catch (error) {
-    addLog(`Google authentication failed: ${error.message}`, 'error');
-    res.status(500).send(`
-      <html>
-        <head><title>Authentication Failed</title></head>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-          <h1>❌ Authentication Failed</h1>
-          <p>Error: ${error.message}</p>
-          <a href="/auth/google" style="color: #007bff;">Try Again</a> | <a href="/" style="color: #007bff;">← Back to MPC Center</a>
-        </body>
-      </html>
-    `);
+    res.status(500).send(`Authentication failed: ${error.message}`);
   }
 });
 
-// Check Google Calendar connection status
 app.get('/api/google-status', async (req, res) => {
   try {
     const isConfigured = !!(config.googleClientId && config.googleClientSecret);
     const isAuthenticated = !!config.googleRefreshToken;
     
     let canCreateEvents = false;
-    let accessTokenValid = false;
-    
     if (isAuthenticated) {
       try {
         const { token } = await oauth2Client.getAccessToken();
-        if (token) {
-          accessTokenValid = true;
-          canCreateEvents = true;
-        }
+        canCreateEvents = !!token;
       } catch (error) {
-        addLog(`Access token check failed: ${error.message}`, 'warning');
+        // Token invalid
       }
     }
 
     res.json({
       configured: isConfigured,
       authenticated: isAuthenticated,
-      accessTokenValid,
       canCreateEvents,
-      authUrl: isConfigured ? '/auth/google' : null,
+      authUrl: '/auth/google',
       calendarId: config.googleCalendarId,
-      status: canCreateEvents ? 'Ready' : (isConfigured ? 'Needs Authentication' : 'Not Configured'),
-      smartSyncEnabled: true
+      status: canCreateEvents ? 'Ready' : (isConfigured ? 'Needs Authentication' : 'Not Configured')
     });
-
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// MCP Protocol Implementation (keeping for compatibility)
-app.post('/mcp', async (req, res) => {
-  try {
-    const { method, params = {} } = req.body;
-
-    switch (method) {
-      case 'initialize':
-        res.json({
-          capabilities: { tools: { listChanged: true } },
-          instructions: "MPC Center - Multi-Platform Connection for Asana and Google Calendar integration with Smart Sync",
-          serverInfo: { name: "MPC Center", version: "1.1.0" }
-        });
-        break;
-
-      case 'tools/list':
-        res.json({
-          tools: [
-            {
-              name: "check_status",
-              description: "Check the current status of MPC Center including configuration and statistics",
-              inputSchema: { type: "object", properties: {}, required: [] }
-            },
-            {
-              name: "run_sync",
-              description: "Manually trigger a sync with smart duplicate prevention and due date change detection",
-              inputSchema: { type: "object", properties: {}, required: [] }
-            }
-          ]
-        });
-        break;
-
-      case 'tools/call':
-        const { name } = params;
-        
-        if (name === 'check_status') {
-          res.json({
-            content: [{ type: "text", text: JSON.stringify({ isRunning, stats, config: { searchKeyword: config.searchKeyword, intervalHours: config.intervalHours, smartSyncEnabled: true } }, null, 2) }]
-          });
-        } else if (name === 'run_sync') {
-          const syncResult = await runSync();
-          res.json({
-            content: [{ type: "text", text: JSON.stringify(syncResult, null, 2) }]
-          });
-        } else {
-          res.status(400).json({ error: { code: "INVALID_REQUEST", message: `Unknown tool: ${name}` } });
-        }
-        break;
-
-      default:
-        res.status(400).json({ error: { code: "INVALID_REQUEST", message: `Unknown method: ${method}` } });
-    }
-  } catch (error) {
-    console.error('MCP Error:', error);
-    res.status(500).json({ error: { code: "INTERNAL_ERROR", message: error.message } });
-  }
-});
-
-// Error handling middleware
-app.use((error, req, res, next) => {
-  console.error('Server error:', error);
-  addLog(`Server error: ${error.message}`, 'error');
-  res.status(500).json({ success: false, error: 'Internal server error' });
-});
-
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({ success: false, error: 'Endpoint not found' });
-});
-
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
   addLog(`MPC Server started on port ${PORT}`, 'success');
-  addLog(`Environment: ${process.env.NODE_ENV || 'development'}`, 'info');
   
-  console.log(`\n🎉 MPC Server running with Smart Sync!`);
-  console.log(`📍 Port: ${PORT}`);
-  console.log(`🌐 Host: 0.0.0.0`);
-  console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔑 Asana Token: ${config.asanaToken ? 'CONFIGURED' : 'NOT SET'}`);
-  console.log(`🏢 Workspace ID: ${config.asanaWorkspaceId ? 'CONFIGURED' : 'NOT SET'}`);
-  console.log(`📅 Google Client ID: ${config.googleClientId ? 'CONFIGURED' : 'NOT SET'}`);
-  console.log(`🗝️  Google Refresh Token: ${config.googleRefreshToken ? 'CONFIGURED' : 'NOT SET'}`);
-  console.log(`🚀 Smart Sync: ENABLED (prevents duplicates, handles due date changes)`);
+  console.log(`\nMPC Server running with Smart Sync!`);
+  console.log(`Port: ${PORT}`);
+  console.log(`Asana Token: ${config.asanaToken ? 'CONFIGURED' : 'NOT SET'}`);
+  console.log(`Google Token: ${config.googleRefreshToken ? 'CONFIGURED' : 'NOT SET'}`);
   
   if (!config.asanaToken) {
     addLog('Warning: ASANA_TOKEN not configured', 'warning');
   }
-  if (!config.asanaWorkspaceId) {
-    addLog('Warning: ASANA_WORKSPACE_ID not configured', 'warning');
-  }
-  if (!config.googleClientId) {
-    addLog('Warning: GOOGLE_CLIENT_ID not configured', 'warning');
-  }
   if (!config.googleRefreshToken) {
-    addLog('Warning: Google Calendar not authenticated. Visit /auth/google',
+    addLog('Warning: Google Calendar not authenticated', 'warning');
+  }
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  if (cronJob) cronJob.destroy();
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  if (cronJob) cronJob.destroy();
+  process.exit(0);
+});
