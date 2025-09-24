@@ -46,24 +46,27 @@ const addLog = (message, type = 'info') => {
 
 // Asana API functions
 const searchAsanaTasks = async (keyword) => {
+  // Replace this entire function with:
   try {
     if (!config.asanaToken) {
       throw new Error('Asana token not configured');
     }
 
-    const response = await axios.get('https://app.asana.com/api/1.0/tasks/search', {
+    // Get user's tasks instead of using search
+    const response = await axios.get('https://app.asana.com/api/1.0/tasks', {
       headers: {
         'Authorization': `Bearer ${config.asanaToken}`,
         'Content-Type': 'application/json'
       },
       params: {
         workspace: config.asanaWorkspaceId,
-        text: keyword,
-        resource_type: 'task',
+        assignee: 'me',
+        completed_since: 'now',
         'opt_fields': 'gid,name,notes,due_on,assignee.name,projects.name,completed'
       }
     });
     
+    // Filter tasks locally for the keyword
     return response.data.data.filter(task => 
       !task.completed && 
       task.name.toLowerCase().includes(keyword.toLowerCase())
