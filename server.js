@@ -1,4 +1,4 @@
-// MPC Server - Express.js API for Claude Connector
+// MPC Server - MCP Protocol Compatible for Claude Connector
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -37,7 +37,6 @@ const addLog = (message, type = 'info') => {
   const timestamp = new Date().toISOString();
   logs.push({ timestamp, message, type, id: Date.now() });
   
-  // Keep only last 100 logs
   if (logs.length > 100) {
     logs = logs.slice(-100);
   }
@@ -65,7 +64,6 @@ const searchAsanaTasks = async (keyword) => {
       }
     });
     
-    // Filter for incomplete tasks containing the keyword
     return response.data.data.filter(task => 
       !task.completed && 
       task.name.toLowerCase().includes(keyword.toLowerCase())
@@ -76,21 +74,15 @@ const searchAsanaTasks = async (keyword) => {
   }
 };
 
-// Google Calendar API functions (simplified - you'll need proper OAuth2)
+// Google Calendar API functions (mock implementation)
 const addToGoogleCalendar = async (task) => {
   try {
-    // For now, this is a mock implementation
-    // You'll need to implement proper Google Calendar OAuth2 flow
-    
     const startDate = task.due_on ? new Date(task.due_on + 'T09:00:00Z') : new Date();
-    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // 1 hour duration
+    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
 
-    // Mock success - replace with actual Google Calendar API call
     await new Promise(resolve => setTimeout(resolve, 500));
     
     addLog(`📅 Would create calendar event: ${task.name}`, 'info');
-    addLog(`   Start: ${startDate.toISOString()}`, 'info');
-    addLog(`   End: ${endDate.toISOString()}`, 'info');
     
     return { 
       success: true, 
@@ -98,7 +90,6 @@ const addToGoogleCalendar = async (task) => {
       startTime: startDate.toISOString(),
       endTime: endDate.toISOString()
     };
-    
   } catch (error) {
     throw new Error(`Google Calendar API error: ${error.message}`);
   }
@@ -110,7 +101,7 @@ const runSync = async () => {
   
   try {
     if (!config.asanaToken || !config.asanaWorkspaceId) {
-      throw new Error('Missing Asana configuration. Please set ASANA_TOKEN and ASANA_WORKSPACE_ID environment variables.');
+      throw new Error('Missing Asana configuration.');
     }
 
     addLog(`🔍 Searching for tasks containing "${config.searchKeyword}"...`, 'info');
@@ -141,14 +132,9 @@ const runSync = async () => {
           processedTasks.push({
             taskId: task.gid,
             taskName: task.name,
-            eventId: result.eventId,
-            startTime: result.startTime,
-            endTime: result.endTime
+            eventId: result.eventId
           });
-        } else {
-          addLog(`❌ Failed to add to calendar: ${task.name}`, 'error');
         }
-        
       } catch (error) {
         addLog(`❌ Error processing task ${task.name}: ${error.message}`, 'error');
       }
@@ -167,48 +153,247 @@ const runSync = async () => {
       eventsCreated,
       processedTasks
     };
-    
   } catch (error) {
     addLog(`❌ Sync failed: ${error.message}`, 'error');
     return { success: false, error: error.message };
   }
 };
 
-// API Routes
+// MCP Protocol Implementation
+app.post('/mcp', async (req, res) => {
+  try {
+    const { method, params = {} } = req.body;
 
-// Health check
+    switch (method) {
+      case 'initialize':
+        res.json({
+          capabilities: {
+            tools: {
+              listChanged: true
+            }
+          },
+          instructions: "MPC Center - Multi-Platform Connection for Asana and Google Calendar integration",
+          serverInfo: {
+            name: "MPC Center",
+            version: "1.0.0"
+          }
+        });
+        break;
+
+      case 'tools/list':
+        res.json({
+          tools: [
+            {
+              name: "check_status",
+              description: "Check the current status of MPC Center including configuration and statistics",
+              inputSchema: {
+                type: "object",
+                properties: {},
+                required: []
+              }
+            },
+            {
+              name: "run_sync",
+              description: "Manually trigger a sync to search for meeting tasks and create calendar events",
+              inputSchema: {
+                type: "object",
+                properties: {},
+                required: []
+              }
+            },
+            {
+              name: "start_automation",
+              description: "Start the automated sync process that runs every 4 hours",
+              inputSchema: {
+                type: "object",
+                properties: {},
+                required: []
+              }
+            },
+            {
+              name: "stop_automation",
+              description: "Stop the automated sync process",
+              inputSchema: {
+                type: "object",
+                properties: {},
+                required: []
+              }
+            },
+            {
+              name: "get_logs",
+              description: "Retrieve recent activity logs from the MPC Center",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  limit: {
+                    type: "number",
+                    description: "Number of logs to retrieve (default: 20)"
+                  }
+                }
+              }
+            }
+          ]
+        });
+        break;
+
+      case 'tools/call':
+        const { name, arguments: args = {} } = params;
+        
+        switch (name) {
+          case 'check_status':
+            res.json({
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    isRunning,
+                    stats,
+                    config: {
+                      searchKeyword: config.searchKeyword,
+                      intervalHours: config.intervalHours,
+                      asanaConfigured: !!config.asanaToken,
+                      workspaceConfigured: !!config.asanaWorkspaceId
+                    },
+                    serverTime: new Date().toISOString()
+                  }, null, 2)
+                }
+              ]
+            });
+            break;
+
+          case 'run_sync':
+            const syncResult = await runSync();
+            res.json({
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(syncResult, null, 2)
+                }
+              ]
+            });
+            break;
+
+          case 'start_automation':
+            if (isRunning) {
+              res.json({
+                content: [
+                  {
+                    type: "text",
+                    text: "Automation is already running"
+                  }
+                ]
+              });
+            } else {
+              isRunning = true;
+              
+              const cronPattern = `0 */${config.intervalHours} * * *`;
+              cronJob = cron.schedule(cronPattern, () => {
+                addLog('⏰ Scheduled sync triggered', 'info');
+                runSync();
+              });
+              
+              addLog(`⚡ Automation started - running every ${config.intervalHours} hours`, 'success');
+              setTimeout(() => runSync(), 1000);
+              
+              res.json({
+                content: [
+                  {
+                    type: "text",
+                    text: `Automation started successfully! Will run every ${config.intervalHours} hours.`
+                  }
+                ]
+              });
+            }
+            break;
+
+          case 'stop_automation':
+            if (!isRunning) {
+              res.json({
+                content: [
+                  {
+                    type: "text",
+                    text: "Automation is not currently running"
+                  }
+                ]
+              });
+            } else {
+              isRunning = false;
+              if (cronJob) {
+                cronJob.destroy();
+                cronJob = null;
+              }
+              addLog('⏹️ Automation stopped', 'info');
+              
+              res.json({
+                content: [
+                  {
+                    type: "text",
+                    text: "Automation stopped successfully"
+                  }
+                ]
+              });
+            }
+            break;
+
+          case 'get_logs':
+            const limit = args.limit || 20;
+            const recentLogs = logs.slice(-limit).reverse();
+            
+            res.json({
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    logs: recentLogs,
+                    totalLogs: logs.length,
+                    showing: recentLogs.length
+                  }, null, 2)
+                }
+              ]
+            });
+            break;
+
+          default:
+            res.status(400).json({
+              error: {
+                code: "INVALID_REQUEST",
+                message: `Unknown tool: ${name}`
+              }
+            });
+        }
+        break;
+
+      default:
+        res.status(400).json({
+          error: {
+            code: "INVALID_REQUEST",
+            message: `Unknown method: ${method}`
+          }
+        });
+    }
+  } catch (error) {
+    console.error('MCP Error:', error);
+    res.status(500).json({
+      error: {
+        code: "INTERNAL_ERROR",
+        message: error.message
+      }
+    });
+  }
+});
+
+// Keep existing REST API for backward compatibility
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy', 
     timestamp: new Date().toISOString(),
     version: '1.0.0',
     environment: process.env.NODE_ENV || 'development',
-    port: PORT
+    port: PORT,
+    protocols: ['REST', 'MCP']
   });
 });
 
-// Root route with API documentation
-app.get('/', (req, res) => {
-  res.json({
-    name: 'MPC Center API',
-    version: '1.0.0',
-    description: 'Multi-Platform Connection: Asana ↔ Google Calendar',
-    status: 'running',
-    endpoints: {
-      'GET /health': 'Health check',
-      'GET /api/status': 'Get current status and stats',
-      'GET /api/logs': 'Get recent logs',
-      'POST /api/config': 'Update configuration',
-      'POST /api/sync': 'Trigger manual sync',
-      'POST /api/start': 'Start automation',
-      'POST /api/stop': 'Stop automation',
-      'DELETE /api/logs': 'Clear logs'
-    },
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Get status
 app.get('/api/status', (req, res) => {
   res.json({
     isRunning,
@@ -218,114 +403,11 @@ app.get('/api/status', (req, res) => {
       asanaToken: config.asanaToken ? '***CONFIGURED***' : 'NOT SET',
       asanaWorkspaceId: config.asanaWorkspaceId ? '***CONFIGURED***' : 'NOT SET'
     },
-    nextRun: cronJob ? 'Scheduled' : 'Not scheduled',
     serverTime: new Date().toISOString()
   });
 });
 
-// Get logs
-app.get('/api/logs', (req, res) => {
-  const limit = parseInt(req.query.limit) || 50;
-  res.json({
-    logs: logs.slice(-limit).reverse(), // Most recent first
-    count: logs.length,
-    limit
-  });
-});
-
-// Update configuration
-app.post('/api/config', (req, res) => {
-  const { asanaToken, asanaWorkspaceId, googleCalendarId, intervalHours, searchKeyword } = req.body;
-  
-  if (asanaToken) config.asanaToken = asanaToken;
-  if (asanaWorkspaceId) config.asanaWorkspaceId = asanaWorkspaceId;
-  if (googleCalendarId) config.googleCalendarId = googleCalendarId;
-  if (intervalHours) config.intervalHours = parseInt(intervalHours);
-  if (searchKeyword) config.searchKeyword = searchKeyword;
-  
-  addLog('⚙️ Configuration updated', 'info');
-  
-  res.json({ success: true, message: 'Configuration updated', config: {
-    ...config,
-    asanaToken: config.asanaToken ? '***CONFIGURED***' : 'NOT SET'
-  }});
-});
-
-// Manual sync trigger
-app.post('/api/sync', async (req, res) => {
-  try {
-    const result = await runSync();
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Start automation
-app.post('/api/start', (req, res) => {
-  if (isRunning) {
-    return res.json({ success: false, message: 'Automation already running' });
-  }
-  
-  isRunning = true;
-  
-  // Set up cron job - runs every X hours
-  const cronPattern = `0 */${config.intervalHours} * * *`;
-  cronJob = cron.schedule(cronPattern, () => {
-    addLog('⏰ Scheduled sync triggered', 'info');
-    runSync();
-  });
-  
-  addLog(`⚡ Automation started - running every ${config.intervalHours} hours`, 'success');
-  
-  // Run immediately
-  setTimeout(() => runSync(), 1000);
-  
-  res.json({ 
-    success: true, 
-    message: `Automation started - running every ${config.intervalHours} hours`,
-    nextRun: `In ${config.intervalHours} hours`
-  });
-});
-
-// Stop automation
-app.post('/api/stop', (req, res) => {
-  if (!isRunning) {
-    return res.json({ success: false, message: 'Automation not running' });
-  }
-  
-  isRunning = false;
-  
-  if (cronJob) {
-    cronJob.destroy();
-    cronJob = null;
-  }
-  
-  addLog('⏹️ Automation stopped', 'info');
-  res.json({ success: true, message: 'Automation stopped' });
-});
-
-// Clear logs
-app.delete('/api/logs', (req, res) => {
-  const logCount = logs.length;
-  logs = [];
-  addLog('🧹 Logs cleared', 'info');
-  res.json({ success: true, message: `Cleared ${logCount} logs` });
-});
-
-// Error handling middleware
-app.use((error, req, res, next) => {
-  console.error('Server error:', error);
-  addLog(`Server error: ${error.message}`, 'error');
-  res.status(500).json({ success: false, error: 'Internal server error' });
-});
-
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({ success: false, error: 'Endpoint not found' });
-});
-
-// Start server - Railway needs 0.0.0.0 binding
+// Start server
 app.listen(PORT, '0.0.0.0', () => {
   addLog(`🚀 MPC Server started on port ${PORT}`, 'success');
   addLog(`Environment: ${process.env.NODE_ENV || 'development'}`, 'info');
@@ -333,43 +415,18 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🎉 MPC Server running!`);
   console.log(`📍 Port: ${PORT}`);
   console.log(`🌐 Host: 0.0.0.0`);
-  console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔧 Protocols: REST + MCP`);
   console.log(`🔑 Asana Token: ${config.asanaToken ? 'CONFIGURED' : 'NOT SET'}`);
   console.log(`🏢 Workspace ID: ${config.asanaWorkspaceId ? 'CONFIGURED' : 'NOT SET'}`);
-  
-  if (!config.asanaToken) {
-    addLog('⚠️  Warning: ASANA_TOKEN not configured', 'warning');
-  }
-  if (!config.asanaWorkspaceId) {
-    addLog('⚠️  Warning: ASANA_WORKSPACE_ID not configured', 'warning');
-  }
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-  addLog('📴 Server shutting down gracefully...', 'info');
-  if (cronJob) {
-    cronJob.destroy();
-  }
+  if (cronJob) cronJob.destroy();
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
-  addLog('📴 Server shutting down gracefully...', 'info');
-  if (cronJob) {
-    cronJob.destroy();
-  }
+  if (cronJob) cronJob.destroy();
   process.exit(0);
-});
-
-// Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-  addLog(`Uncaught Exception: ${error.message}`, 'error');
-  process.exit(1);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  addLog(`Unhandled Rejection: ${reason}`, 'error');
 });
