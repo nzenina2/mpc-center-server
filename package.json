@@ -14,16 +14,14 @@
     "node-cron": "^3.0.3",
     "axios": "^1.6.0",
     "dotenv": "^16.3.1",
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "googleapis": "^128.0.0",
+    "google-auth-library": "^9.4.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "bin": {
-    "mpc-server": "./mcp-server.js"
   },
   "keywords": [
     "asana",
