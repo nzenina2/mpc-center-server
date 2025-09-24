@@ -406,7 +406,85 @@ app.get('/api/status', (req, res) => {
     serverTime: new Date().toISOString()
   });
 });
+// Add missing REST API endpoints
+app.get('/', (req, res) => {
+  res.json({
+    name: 'MPC Center API',
+    version: '1.0.0',
+    description: 'Multi-Platform Connection: Asana ↔ Google Calendar',
+    status: 'running',
+    endpoints: {
+      'GET /health': 'Health check',
+      'GET /api/status': 'Get current status and stats',
+      'POST /api/start': 'Start automation',
+      'POST /api/stop': 'Stop automation',
+      'POST /api/sync': 'Trigger manual sync',
+      'GET /api/logs': 'Get recent logs'
+    },
+    timestamp: new Date().toISOString()
+  });
+});
 
+// Manual sync trigger
+app.post('/api/sync', async (req, res) => {
+  try {
+    const result = await runSync();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Start automation
+app.post('/api/start', (req, res) => {
+  if (isRunning) {
+    return res.json({ success: false, message: 'Automation already running' });
+  }
+  
+  isRunning = true;
+  
+  const cronPattern = `0 */${config.intervalHours} * * *`;
+  cronJob = cron.schedule(cronPattern, () => {
+    addLog('⏰ Scheduled sync triggered', 'info');
+    runSync();
+  });
+  
+  addLog(`⚡ Automation started - running every ${config.intervalHours} hours`, 'success');
+  setTimeout(() => runSync(), 1000);
+  
+  res.json({ 
+    success: true, 
+    message: `Automation started - running every ${config.intervalHours} hours`,
+    nextRun: `In ${config.intervalHours} hours`
+  });
+});
+
+// Stop automation
+app.post('/api/stop', (req, res) => {
+  if (!isRunning) {
+    return res.json({ success: false, message: 'Automation not running' });
+  }
+  
+  isRunning = false;
+  
+  if (cronJob) {
+    cronJob.destroy();
+    cronJob = null;
+  }
+  
+  addLog('⏹️ Automation stopped', 'info');
+  res.json({ success: true, message: 'Automation stopped' });
+});
+
+// Get logs
+app.get('/api/logs', (req, res) => {
+  const limit = parseInt(req.query.limit) || 50;
+  res.json({
+    logs: logs.slice(-limit).reverse(),
+    count: logs.length,
+    limit
+  });
+});
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
   addLog(`🚀 MPC Server started on port ${PORT}`, 'success');
