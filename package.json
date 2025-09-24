@@ -1,7 +1,7 @@
 {
   "name": "mpc-center-server",
   "version": "1.0.0",
-  "description": "MPC Center - Asana to Google Calendar Integration",
+  "description": "MPC Center - Asana free version to Google Calendar Integration",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -26,6 +26,6 @@
     "automation",
     "mpc"
   ],
-  "author": "Your Name",
+  "author": "Nadin",
   "license": "MIT"
 }
